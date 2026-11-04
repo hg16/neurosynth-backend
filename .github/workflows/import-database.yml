@@ -1,0 +1,45 @@
+name: Import Neurosynth data to Render PostgreSQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_import:
+        description: 'Type IMPORT to confirm replacing the Neurosynth tables'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neurosynth-database-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: ${{ inputs.confirm_import == 'IMPORT' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-import.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements-import.txt
+
+      - name: Preflight database connection and dataset
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+        run: python preflight_db.py
+
+      - name: Import Neurosynth Parquet data
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+        run: python create_db.py --url "$DB_URL" --data-dir . --schema ns --if-exists replace
