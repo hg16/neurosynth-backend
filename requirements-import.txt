@@ -1,0 +1,4 @@
+-r requirements.txt
+pandas>=2.1,<4.0
+numpy>=1.26,<3.0
+pyarrow>=14.0
