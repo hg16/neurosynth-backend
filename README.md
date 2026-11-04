@@ -46,25 +46,15 @@ Each dissociation response includes `A_without_B` and `B_without_A`, each with a
    gunicorn app:app --bind 0.0.0.0:${PORT:-5000}
    ```
 
-If a connection needs TLS, add `?sslmode=require` to `DB_URL` or set `DB_SSLMODE=require` for the web service.
-
 ## Deploy with Render and GitHub
 
-The included `render.yaml` defines a Singapore web service. The database is already provisioned, so keep its credentials outside the repository.
+The included `render.yaml` defines a Singapore web service.
 
-1. Upload the project contents, including the three `.parquet` files and `.github/workflows/import-database.yml`, to a GitHub repository. A private repository is recommended because it contains course data.
+1. Upload the project contents, including the three `.parquet` files and `.github/workflows/import-database.yml`, to a GitHub repository. 
 2. In GitHub, add an Actions repository secret named `DB_URL` with the Render **External Database URL**.
 3. Open **Actions → Import Neurosynth data to Render PostgreSQL → Run workflow**. Enter `IMPORT` in the confirmation field. The import replaces tables in the `ns` schema.
 4. Create a Render Blueprint from the repository. Set the web service's `DB_URL` to the Render **Internal Database URL**.
 5. Open the service root, then `/test_db` and `/docs`.
-
-The free database plan may have storage or lifetime limits. Check the current database usage in Render before starting the import; the compressed source files do not show the final PostgreSQL storage size.
-
-Never commit a database URL or password. `check_db.py` can report the PostgreSQL version and installed extension status without changing the database:
-
-```bash
-python check_db.py --url "$DB_URL"
-```
 
 ## Files
 
