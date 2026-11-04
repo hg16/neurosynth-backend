@@ -2,29 +2,6 @@
 
 A Flask API for functional dissociation queries over the supplied Neurosynth dataset and a PostgreSQL database. The dissociation routes return studies in **A without B** and **B without A**.
 
-## Your Render database
-
-These details are from the information you provided. The actual database URLs and password belong in Render/GitHub secrets, never in this repository.
-
-| Setting | Value |
-| --- | --- |
-| Render database | Neurosynth (`neurosynth_yp2f`) |
-| Status | Available |
-| PostgreSQL | 18 |
-| Region | Singapore (Southeast Asia) |
-| Plan | Free database |
-| Database user | `neurosynth_yp2f_user` |
-| Port | 5432 |
-| Internal and external URLs | Available; use the URL for the relevant service below |
-
-Extension status was unconfirmed in the Render page. This backend uses native PostgreSQL features, so none of these extensions is required:
-
-| Extension | Status supplied | Required |
-| --- | --- | --- |
-| PostGIS | Unconfirmed | No |
-| `pg_trgm` | Unconfirmed | No |
-| `unaccent` | Unconfirmed | No |
-
 Coordinate distance is calculated in the dataset's x/y/z units. It is a 3D Euclidean radius, not a distance in kilometres.
 
 ## API
