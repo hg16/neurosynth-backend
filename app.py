@@ -293,15 +293,13 @@ def create_app():
         return jsonify({
             "openapi": "3.0.3",
             "info": {
-                "title": "Neurosynth Functional Dissociation API",
+                "title": "Neurosynth Backend",
                 "version": "1.0.0",
                 "description": (
                     "Find studies that mention one term or MNI location but not another. "
                     "Dissociation endpoints return both A without B and B without A. "
-                    "Location radius is Euclidean distance in the dataset's coordinate units."
                 ),
             },
-            "servers": [{"url": "/"}],
             "paths": {
                 "/": {"get": {"summary": "Health check", "responses": {
                     "200": {"description": "Service is running."}
