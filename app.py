@@ -89,6 +89,30 @@ def rows_as_dicts(rows) -> list[dict[str, Any]]:
     return [dict(row._mapping) for row in rows]
 
 
+def term_match_sql(column: str) -> str:
+    """Match clean terms and legacy values stored as terms_*__vocabulary."""
+    return f"""lower(trim(regexp_replace(replace(
+        CASE WHEN strpos({column}, '__') > 0
+             THEN substring({column} FROM strpos({column}, '__') + 2)
+             ELSE {column}
+        END,
+        '_', ' '), '[[:space:]]+', ' ', 'g')))"""
+
+
+def coordinate_storage(conn) -> str:
+    """Return the coordinate layout present in the already-populated database."""
+    columns = set(conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'ns' AND table_name = 'coordinates'
+    """)).scalars().all())
+    if {"x", "y", "z"}.issubset(columns):
+        return "xyz"
+    if "geom" in columns:
+        return "geom"
+    raise RuntimeError("ns.coordinates has neither x/y/z nor geom columns.")
+
+
 def metadata_for_studies(conn, study_ids: list[str], limit: int):
     """Return metadata records for a set of matching study IDs."""
     if not study_ids:
@@ -109,10 +133,10 @@ def metadata_for_studies(conn, study_ids: list[str], limit: int):
 def studies_for_term(conn, term: str, limit: int) -> list[dict[str, Any]]:
     term = normalize_term(term)
     ids = conn.execute(
-        text("""
+        text(f"""
             SELECT DISTINCT study_id
             FROM ns.annotations_terms
-            WHERE lower(trim("term")) = :term
+            WHERE {term_match_sql('term')} = :term
             ORDER BY study_id
             LIMIT :limit
         """),
@@ -123,43 +147,59 @@ def studies_for_term(conn, term: str, limit: int) -> list[dict[str, Any]]:
 
 def studies_for_location(conn, xyz: tuple[float, float, float], radius: float, limit: int):
     x, y, z = xyz
-    ids = conn.execute(
-        text("""
-            SELECT DISTINCT study_id
-            FROM ns.coordinates
-            WHERE x BETWEEN :x_min AND :x_max
-              AND y BETWEEN :y_min AND :y_max
-              AND z BETWEEN :z_min AND :z_max
-              AND (x - :x) * (x - :x)
-                + (y - :y) * (y - :y)
-                + (z - :z) * (z - :z) <= :radius_squared
-            ORDER BY study_id
-            LIMIT :limit
-        """),
-        {
-            "x": x, "y": y, "z": z,
-            "x_min": x - radius, "x_max": x + radius,
-            "y_min": y - radius, "y_max": y + radius,
-            "z_min": z - radius, "z_max": z + radius,
-            "radius_squared": radius * radius,
-            "limit": limit,
-        },
-    ).scalars().all()
+    if coordinate_storage(conn) == "geom":
+        ids = conn.execute(
+            text("""
+                SELECT DISTINCT study_id
+                FROM ns.coordinates
+                WHERE ST_3DDWithin(
+                    geom,
+                    ST_SetSRID(ST_MakePoint(:x, :y, :z), 4326),
+                    :radius
+                )
+                ORDER BY study_id
+                LIMIT :limit
+            """),
+            {"x": x, "y": y, "z": z, "radius": radius, "limit": limit},
+        ).scalars().all()
+    else:
+        ids = conn.execute(
+            text("""
+                SELECT DISTINCT study_id
+                FROM ns.coordinates
+                WHERE x BETWEEN :x_min AND :x_max
+                  AND y BETWEEN :y_min AND :y_max
+                  AND z BETWEEN :z_min AND :z_max
+                  AND (x - :x) * (x - :x)
+                    + (y - :y) * (y - :y)
+                    + (z - :z) * (z - :z) <= :radius_squared
+                ORDER BY study_id
+                LIMIT :limit
+            """),
+            {
+                "x": x, "y": y, "z": z,
+                "x_min": x - radius, "x_max": x + radius,
+                "y_min": y - radius, "y_max": y + radius,
+                "z_min": z - radius, "z_max": z + radius,
+                "radius_squared": radius * radius,
+                "limit": limit,
+            },
+        ).scalars().all()
     return metadata_for_studies(conn, list(ids), limit)
 
 
 def dissociate_terms(conn, term_a: str, term_b: str, limit: int):
     a, b = normalize_term(term_a), normalize_term(term_b)
     ids = conn.execute(
-        text("""
+        text(f"""
             SELECT DISTINCT a.study_id
             FROM ns.annotations_terms AS a
-            WHERE lower(trim(a.term)) = :term_a
+            WHERE {term_match_sql('a.term')} = :term_a
               AND NOT EXISTS (
                   SELECT 1
                   FROM ns.annotations_terms AS b
                   WHERE b.study_id = a.study_id
-                    AND lower(trim(b.term)) = :term_b
+                    AND {term_match_sql('b.term')} = :term_b
               )
             ORDER BY a.study_id
             LIMIT :limit
@@ -172,42 +212,72 @@ def dissociate_terms(conn, term_a: str, term_b: str, limit: int):
 def dissociate_locations(conn, xyz_a, xyz_b, radius: float, limit: int):
     ax, ay, az = xyz_a
     bx, by, bz = xyz_b
-    ids = conn.execute(
-        text("""
-            SELECT DISTINCT a.study_id
-            FROM ns.coordinates AS a
-            WHERE a.x BETWEEN :ax_min AND :ax_max
-              AND a.y BETWEEN :ay_min AND :ay_max
-              AND a.z BETWEEN :az_min AND :az_max
-              AND (a.x - :ax) * (a.x - :ax)
-                + (a.y - :ay) * (a.y - :ay)
-                + (a.z - :az) * (a.z - :az) <= :radius_squared
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM ns.coordinates AS b
-                  WHERE b.study_id = a.study_id
-                    AND b.x BETWEEN :bx_min AND :bx_max
-                    AND b.y BETWEEN :by_min AND :by_max
-                    AND b.z BETWEEN :bz_min AND :bz_max
-                    AND (b.x - :bx) * (b.x - :bx)
-                      + (b.y - :by) * (b.y - :by)
-                      + (b.z - :bz) * (b.z - :bz) <= :radius_squared
-              )
-            ORDER BY a.study_id
-            LIMIT :limit
-        """),
-        {
-            "ax": ax, "ay": ay, "az": az,
-            "bx": bx, "by": by, "bz": bz,
-            "ax_min": ax - radius, "ax_max": ax + radius,
-            "ay_min": ay - radius, "ay_max": ay + radius,
-            "az_min": az - radius, "az_max": az + radius,
-            "bx_min": bx - radius, "bx_max": bx + radius,
-            "by_min": by - radius, "by_max": by + radius,
-            "bz_min": bz - radius, "bz_max": bz + radius,
-            "radius_squared": radius * radius, "limit": limit,
-        },
-    ).scalars().all()
+    if coordinate_storage(conn) == "geom":
+        ids = conn.execute(
+            text("""
+                SELECT DISTINCT a.study_id
+                FROM ns.coordinates AS a
+                WHERE ST_3DDWithin(
+                    a.geom,
+                    ST_SetSRID(ST_MakePoint(:ax, :ay, :az), 4326),
+                    :radius
+                )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM ns.coordinates AS b
+                      WHERE b.study_id = a.study_id
+                        AND ST_3DDWithin(
+                            b.geom,
+                            ST_SetSRID(ST_MakePoint(:bx, :by, :bz), 4326),
+                            :radius
+                        )
+                  )
+                ORDER BY a.study_id
+                LIMIT :limit
+            """),
+            {
+                "ax": ax, "ay": ay, "az": az,
+                "bx": bx, "by": by, "bz": bz,
+                "radius": radius, "limit": limit,
+            },
+        ).scalars().all()
+    else:
+        ids = conn.execute(
+            text("""
+                SELECT DISTINCT a.study_id
+                FROM ns.coordinates AS a
+                WHERE a.x BETWEEN :ax_min AND :ax_max
+                  AND a.y BETWEEN :ay_min AND :ay_max
+                  AND a.z BETWEEN :az_min AND :az_max
+                  AND (a.x - :ax) * (a.x - :ax)
+                    + (a.y - :ay) * (a.y - :ay)
+                    + (a.z - :az) * (a.z - :az) <= :radius_squared
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM ns.coordinates AS b
+                      WHERE b.study_id = a.study_id
+                        AND b.x BETWEEN :bx_min AND :bx_max
+                        AND b.y BETWEEN :by_min AND :by_max
+                        AND b.z BETWEEN :bz_min AND :bz_max
+                        AND (b.x - :bx) * (b.x - :bx)
+                          + (b.y - :by) * (b.y - :by)
+                          + (b.z - :bz) * (b.z - :bz) <= :radius_squared
+                  )
+                ORDER BY a.study_id
+                LIMIT :limit
+            """),
+            {
+                "ax": ax, "ay": ay, "az": az,
+                "bx": bx, "by": by, "bz": bz,
+                "ax_min": ax - radius, "ax_max": ax + radius,
+                "ay_min": ay - radius, "ay_max": ay + radius,
+                "az_min": az - radius, "az_max": az + radius,
+                "bx_min": bx - radius, "bx_max": bx + radius,
+                "by_min": by - radius, "by_max": by + radius,
+                "bz_min": bz - radius, "bz_max": bz + radius,
+                "radius_squared": radius * radius, "limit": limit,
+            },
+        ).scalars().all()
     return metadata_for_studies(conn, list(ids), limit)
 
 
